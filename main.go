@@ -32,12 +32,8 @@ func processInterrupt(resWriter *http.ResponseWriter, it *types.Interruption) {
 	(*resWriter).Write([]byte(it.Data))
 }
 
-func handleIngress(resWriter *http.ResponseWriter, req *http.Request, waf *coraza.WAF) (*http.Response, error) {
-	tx := (*waf).NewTransaction()
-	defer func() {
-		tx.ProcessLogging()
-		tx.Close()
-	}()
+func handleIngress(tx types.Transaction, resWriter *http.ResponseWriter, req *http.Request) (*http.Response, error) {
+	// tx := (*waf).NewTransaction()
 	tx.ProcessConnection("localhost", 8080, "localhost", 8000)
 	// TODO preserve referer
 	for k, v := range req.Header {
@@ -55,6 +51,10 @@ func handleIngress(resWriter *http.ResponseWriter, req *http.Request, waf *coraz
 	if req.Body != nil {
 		body_buffer = bytes.Buffer{}
 		io.Copy(&body_buffer, req.Body)
+		if it, _, err := tx.ReadRequestBodyFrom(req.Body); it != nil || err != nil {
+			processInterrupt(resWriter, it)
+			return nil, errors.New("interrup in processrequestbody")
+		}
 		tx.WriteRequestBody(body_buffer.Bytes())
 		if it, err := tx.ProcessRequestBody(); it != nil || err != nil {
 			processInterrupt(resWriter, it)
@@ -63,8 +63,11 @@ func handleIngress(resWriter *http.ResponseWriter, req *http.Request, waf *coraz
 	}
 
 	client := &http.Client{}
-	newReq, _ := http.NewRequest(req.Method, "http://localhost:8000"+req.URL.Path, req.Body)
+	newReq, _ := http.NewRequest(req.Method, "http://localhost:8000"+req.URL.Path, &body_buffer)
 	newReq.Header = req.Header
+	for x, y := range req.Header {
+		newReq.Header.Set(x, y[0])
+	}
 	res, err := client.Do(newReq)
 	if err != nil {
 		fmt.Println("Error inside handle Ingress: ", err)
@@ -74,12 +77,12 @@ func handleIngress(resWriter *http.ResponseWriter, req *http.Request, waf *coraz
 	return res, nil
 }
 
-func handleEgress(resWriter *http.ResponseWriter, backend_res *http.Response, waf *coraza.WAF) error {
-	tx := (*waf).NewTransaction()
-	defer func() {
-		tx.ProcessLogging()
-		tx.Close()
-	}()
+func handleEgress(tx types.Transaction, resWriter *http.ResponseWriter, backend_res *http.Response) error {
+	// tx := (*waf).NewTransaction()
+	// defer func() {
+	// 	tx.ProcessLogging()
+	// 	tx.Close()
+	// }()
 	tx.ProcessConnection("localhost", 8000, "localhost", 8080)
 	respBody := new(bytes.Buffer)
 	io.Copy(respBody, backend_res.Body)
@@ -101,13 +104,18 @@ func handleEgress(resWriter *http.ResponseWriter, backend_res *http.Response, wa
 
 func handler(resWriter http.ResponseWriter, req *http.Request, waf *coraza.WAF) {
 	fmt.Printf("Request: %v %v\n", req.Method, req.URL.Path)
-	res, err := handleIngress(&resWriter, req, waf)
+	tx := (*waf).NewTransaction()
+	defer func() {
+		tx.ProcessLogging()
+		tx.Close()
+	}()
+	res, err := handleIngress(tx, &resWriter, req)
 	if err != nil {
 		fmt.Printf("Ingress error: %v\n", err)
 		return
 	}
 	fmt.Printf("Response: %v\n", res.StatusCode)
-	if err := handleEgress(&resWriter, res, waf); err != nil {
+	if err := handleEgress(tx, &resWriter, res); err != nil {
 		fmt.Printf("Egress error: %v\n", err)
 		return
 	}
