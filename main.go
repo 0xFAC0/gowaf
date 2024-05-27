@@ -14,9 +14,9 @@ import (
 
 func initCoraza() coraza.WAF {
 	cfg := coraza.NewWAFConfig().
-		WithDirectivesFromFile("coraza.conf").
-		WithDirectivesFromFile("wafreiruleset/evilurl.conf").
-		WithDirectivesFromFile("coreruleset/crs-setup.conf.example").
+		// WithDirectivesFromFile("wafreiruleset/default.conf").
+		// WithDirectivesFromFile("coraza.conf").
+		// WithDirectivesFromFile("coreruleset/crs-setup.conf.example")
 		WithDirectivesFromFile("coreruleset/rules/*.conf")
 	waf, err := coraza.NewWAF(cfg)
 	if err != nil {
@@ -27,62 +27,55 @@ func initCoraza() coraza.WAF {
 
 func processInterrupt(resWriter *http.ResponseWriter, it *types.Interruption) {
 	(*resWriter).WriteHeader(it.Status)
-	fmt.Fprintf((*resWriter), "Interruption: %v\n", it)
-	fmt.Println("Interruption: ", it)
-	(*resWriter).Write([]byte(it.Data))
+	log.Println("Interruption: ", it)
+	(*resWriter).Write([]byte(fmt.Sprintf("Interruption: %v %v %v\n", it.Action, it.RuleID, it.Data)))
 }
 
 func handleIngress(tx types.Transaction, resWriter *http.ResponseWriter, req *http.Request) (*http.Response, error) {
-	// tx := (*waf).NewTransaction()
 	tx.ProcessConnection("localhost", 8080, "localhost", 8000)
-	// TODO preserve referer
 	for k, v := range req.Header {
 		tx.AddRequestHeader(k, v[0])
 	}
-	// tx.AddRequestHeader("Host", req.Host)
-	// tx.AddRequestHeader("User-Agent", req.UserAgent())
-	// tx.AddRequestHeader("Content-Type", req.Header.Get("Content-Type"))
+	for k, v := range req.URL.Query() {
+		tx.AddGetRequestArgument(k, v[0])
+		log.Println("Request query: ", k, " = ", v[0])
+	}
 	tx.ProcessURI(req.URL.RawQuery, req.Method, req.Proto)
 	if it := tx.ProcessRequestHeaders(); it != nil {
 		processInterrupt(resWriter, it)
 		return nil, errors.New("interrup in request headers") // TODO return error
 	}
 	var body_buffer bytes.Buffer
-	if req.Body != nil {
-		body_buffer = bytes.Buffer{}
-		io.Copy(&body_buffer, req.Body)
-		if it, _, err := tx.ReadRequestBodyFrom(req.Body); it != nil || err != nil {
-			processInterrupt(resWriter, it)
-			return nil, errors.New("interrup in processrequestbody")
-		}
-		tx.WriteRequestBody(body_buffer.Bytes())
-		if it, err := tx.ProcessRequestBody(); it != nil || err != nil {
-			processInterrupt(resWriter, it)
-			return nil, errors.New("interrup in processrequestbody")
-		}
+	body_buffer = bytes.Buffer{}
+	io.Copy(&body_buffer, req.Body)
+	log.Println("Request body: ", body_buffer.String())
+	if it, _, err := tx.ReadRequestBodyFrom(req.Body); it != nil || err != nil {
+		processInterrupt(resWriter, it)
+		return nil, errors.New("interrup in processrequestbody")
+	}
+	tx.WriteRequestBody(body_buffer.Bytes())
+	if it, err := tx.ProcessRequestBody(); it != nil || err != nil {
+		processInterrupt(resWriter, it)
+		return nil, errors.New("interrup in processrequestbody")
 	}
 
 	client := &http.Client{}
-	newReq, _ := http.NewRequest(req.Method, "http://localhost:8000"+req.URL.Path, &body_buffer)
+	newReq, _ := http.NewRequest(req.Method, "http://localhost:8000"+req.URL.String(), &body_buffer)
 	newReq.Header = req.Header
 	for x, y := range req.Header {
 		newReq.Header.Set(x, y[0])
 	}
+	// newReq.Header.Del("Referer")
 	res, err := client.Do(newReq)
 	if err != nil {
-		fmt.Println("Error inside handle Ingress: ", err)
+		log.Println("Error inside handle Ingress: ", err)
 		return nil, err
 	}
-	fmt.Println("Backend response: ", res.StatusCode)
+	log.Println("Backend response: ", res.StatusCode)
 	return res, nil
 }
 
 func handleEgress(tx types.Transaction, resWriter *http.ResponseWriter, backend_res *http.Response) error {
-	// tx := (*waf).NewTransaction()
-	// defer func() {
-	// 	tx.ProcessLogging()
-	// 	tx.Close()
-	// }()
 	tx.ProcessConnection("localhost", 8000, "localhost", 8080)
 	respBody := new(bytes.Buffer)
 	io.Copy(respBody, backend_res.Body)
@@ -103,7 +96,7 @@ func handleEgress(tx types.Transaction, resWriter *http.ResponseWriter, backend_
 }
 
 func handler(resWriter http.ResponseWriter, req *http.Request, waf *coraza.WAF) {
-	fmt.Printf("Request: %v %v\n", req.Method, req.URL.Path)
+	log.Printf("Request: %v %v\n", req.Method, req.URL.Path)
 	tx := (*waf).NewTransaction()
 	defer func() {
 		tx.ProcessLogging()
@@ -111,12 +104,12 @@ func handler(resWriter http.ResponseWriter, req *http.Request, waf *coraza.WAF) 
 	}()
 	res, err := handleIngress(tx, &resWriter, req)
 	if err != nil {
-		fmt.Printf("Ingress error: %v\n", err)
+		log.Printf("Ingress error: %v\n", err)
 		return
 	}
-	fmt.Printf("Response: %v\n", res.StatusCode)
+	log.Printf("Response: %v\n", res.StatusCode)
 	if err := handleEgress(tx, &resWriter, res); err != nil {
-		fmt.Printf("Egress error: %v\n", err)
+		log.Printf("Egress error: %v\n", err)
 		return
 	}
 }
