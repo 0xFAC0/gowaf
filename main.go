@@ -14,10 +14,10 @@ import (
 
 func initCoraza() coraza.WAF {
 	cfg := coraza.NewWAFConfig().
-		// WithDirectivesFromFile("wafreiruleset/default.conf").
+		// WithDirectivesFromFile("wafreiruleset/default.conf")
 		// WithDirectivesFromFile("coraza.conf").
-		// WithDirectivesFromFile("coreruleset/crs-setup.conf.example")
-		WithDirectivesFromFile("coreruleset/rules/*.conf")
+		WithDirectivesFromFile("coreruleset/crs-setup.conf.example")
+		//WithDirectivesFromFile("coreruleset/rules/*.conf")
 	waf, err := coraza.NewWAF(cfg)
 	if err != nil {
 		panic(err)
@@ -45,8 +45,7 @@ func handleIngress(tx types.Transaction, resWriter *http.ResponseWriter, req *ht
 		processInterrupt(resWriter, it)
 		return nil, errors.New("interrup in request headers") // TODO return error
 	}
-	var body_buffer bytes.Buffer
-	body_buffer = bytes.Buffer{}
+	body_buffer := bytes.Buffer{}
 	io.Copy(&body_buffer, req.Body)
 	log.Println("Request body: ", body_buffer.String())
 	if it, _, err := tx.ReadRequestBodyFrom(req.Body); it != nil || err != nil {
@@ -60,13 +59,17 @@ func handleIngress(tx types.Transaction, resWriter *http.ResponseWriter, req *ht
 	}
 
 	client := &http.Client{}
-	newReq, _ := http.NewRequest(req.Method, "http://localhost:8000"+req.URL.String(), &body_buffer)
-	newReq.Header = req.Header
-	for x, y := range req.Header {
-		newReq.Header.Set(x, y[0])
+	req.RequestURI = ""
+	req.URL.Scheme = "http"
+	req.URL.Host = "localhost:8000"
+	req.URL.RawPath = req.URL.Path
+	req.URL.RawQuery = req.URL.Query().Encode()
+	req.Body = io.NopCloser(bytes.NewReader(body_buffer.Bytes()))
+	if req.Header.Get("Referer") == "http://localhost:8080" {
+		println("Setting referer")
+		req.Header.Set("Referer", "http://localhost:8000")
 	}
-	// newReq.Header.Del("Referer")
-	res, err := client.Do(newReq)
+	res, err := client.Do(req)
 	if err != nil {
 		log.Println("Error inside handle Ingress: ", err)
 		return nil, err
